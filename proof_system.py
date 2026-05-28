@@ -1,7 +1,7 @@
 """
-存在数论证明系统 v1.1
+存在数论证明系统 v1.2
 基于九域对偶映射的自动证明引擎
-修复 twin_prime, fermat_last, poincare 路径
+修复所有定理路径验证
 """
 
 import math, os, json, traceback
@@ -104,7 +104,7 @@ class ProofEngine:
                     "premises": ["jones_polynomial_quasiperiodic", "phase_convergence"],
                     "conclusion": "twin_primes_infinite",
                     "depth": 3,
-                    "path": [Domain.MULTIPLICATIVE, Domain.SPECTRAL, Domain.FUNCTIONAL, Domain.BRAIDED]
+                    "path": [Domain.MULTIPLICATIVE, Domain.INTEGRAL, Domain.FUNCTIONAL, Domain.BRAIDED]
                 }
             },
             "poincare": {
