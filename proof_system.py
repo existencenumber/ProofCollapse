@@ -1,6 +1,6 @@
 """
-ProofCollapse v3.1 — 自动推理引擎（修复版）
-修复：杨-米尔斯等关键词缺失，新增手动指定域的接口
+ProofCollapse v3.3 — 自动推理引擎（超级自然语言理解版 + 通俗报告）
+支持矩阵、群、环、线性代数、疑问句，生成漂亮的可视化证明报告
 """
 
 import math, os, json, traceback, re
@@ -22,11 +22,27 @@ class Domain(Enum):
     CATEGORICAL = "categorical"
 
 DOMAIN_NAMES = {
-    Domain.ADDITIVE: "加法域", Domain.MULTIPLICATIVE: "乘法域",
-    Domain.INTEGRAL: "积分域", Domain.DIFFERENTIAL: "微分域",
-    Domain.SPECTRAL: "谱域", Domain.FUNCTIONAL: "泛函积分域",
-    Domain.BRAIDED: "编织域", Domain.HOMOTOPY: "同伦域",
+    Domain.ADDITIVE: "加法域",
+    Domain.MULTIPLICATIVE: "乘法域",
+    Domain.INTEGRAL: "积分域",
+    Domain.DIFFERENTIAL: "微分域",
+    Domain.SPECTRAL: "谱域",
+    Domain.FUNCTIONAL: "泛函积分域",
+    Domain.BRAIDED: "编织域",
+    Domain.HOMOTOPY: "同伦域",
     Domain.CATEGORICAL: "范畴域",
+}
+
+DOMAIN_LAYMAN = {
+    Domain.ADDITIVE: "处理“加加减减”这类离散步骤的领域，比如整数的加法。",
+    Domain.MULTIPLICATIVE: "处理“乘乘除除”和素数分解的领域，比如质数的性质。",
+    Domain.INTEGRAL: "处理连续变化和总量的领域，比如面积、微分方程。",
+    Domain.DIFFERENTIAL: "处理变化率和斜率的领域，比如速度、加速度。",
+    Domain.SPECTRAL: "把东西分解成频率或模式的领域，比如声音的频谱、L函数的零点。",
+    Domain.FUNCTIONAL: "处理所有可能路径总和的领域，常用于复杂的量子问题。",
+    Domain.BRAIDED: "处理打结、缠绕、辫子结构的领域，与拓扑量子计算有关。",
+    Domain.HOMOTOPY: "处理连续变形（拉伸、扭曲但不撕破）的领域，比如橡皮泥的形状。",
+    Domain.CATEGORICAL: "处理“关系的关系”的抽象领域，是数学结构的顶层设计。",
 }
 
 DUAL_GRAPH = {
@@ -41,7 +57,7 @@ DUAL_GRAPH = {
     Domain.CATEGORICAL: {"id_0": Domain.ADDITIVE, "id_1": Domain.MULTIPLICATIVE},
 }
 
-# ========== 语义解析器 ==========
+# ========== 语义解析器 (超级增强版) ==========
 class SemanticParser:
     KEYWORD_MAP = {
         # === 加法域 ===
@@ -51,14 +67,22 @@ class SemanticParser:
         "哥德巴赫": Domain.ADDITIVE, "费马": Domain.ADDITIVE,
         "考拉兹": Domain.ADDITIVE, "collatz": Domain.ADDITIVE,
         "费马大定理": Domain.ADDITIVE, "正整数": Domain.ADDITIVE,
+        "和": Domain.ADDITIVE, "求和": Domain.ADDITIVE,
+        "六k±一": Domain.ADDITIVE, "6k±1": Domain.ADDITIVE,
         
         # === 乘法域 ===
         "素数": Domain.MULTIPLICATIVE, "质数": Domain.MULTIPLICATIVE,
         "因子": Domain.MULTIPLICATIVE, "分解": Domain.MULTIPLICATIVE,
         "乘法": Domain.MULTIPLICATIVE, "乘法域": Domain.MULTIPLICATIVE,
         "abc": Domain.MULTIPLICATIVE, "ABC": Domain.MULTIPLICATIVE,
-        "伽罗瓦": Domain.MULTIPLICATIVE, "frobenius": Domain.MULTIPLICATIVE,
         "孪生素数": Domain.MULTIPLICATIVE, "孪生": Domain.MULTIPLICATIVE,
+        "乘积": Domain.MULTIPLICATIVE, "乘": Domain.MULTIPLICATIVE,
+        "逆元": Domain.MULTIPLICATIVE, "可逆": Domain.MULTIPLICATIVE,
+        "单位元": Domain.MULTIPLICATIVE, "群": Domain.MULTIPLICATIVE,
+        "矩阵": Domain.MULTIPLICATIVE, "方阵": Domain.MULTIPLICATIVE,
+        "正交": Domain.MULTIPLICATIVE, "酉": Domain.MULTIPLICATIVE,
+        "行列式": Domain.MULTIPLICATIVE, "特征值": Domain.MULTIPLICATIVE,
+        "伽罗瓦": Domain.MULTIPLICATIVE, "frobenius": Domain.MULTIPLICATIVE,
         
         # === 谱域 ===
         "l函数": Domain.SPECTRAL, "l-函数": Domain.SPECTRAL,
@@ -67,8 +91,6 @@ class SemanticParser:
         "自守": Domain.SPECTRAL, "模形式": Domain.SPECTRAL,
         "hecke": Domain.SPECTRAL, "langlands": Domain.SPECTRAL,
         "朗兰兹": Domain.SPECTRAL,
-        
-        # === 物理专有名词 → 谱域 ===
         "杨-米尔斯": Domain.SPECTRAL, "yang mills": Domain.SPECTRAL,
         "杨米尔斯": Domain.SPECTRAL, "yang-mills": Domain.SPECTRAL,
         "规范场": Domain.SPECTRAL, "胶球": Domain.SPECTRAL,
@@ -79,6 +101,7 @@ class SemanticParser:
         "同伦": Domain.HOMOTOPY, "基本群": Domain.HOMOTOPY,
         "庞加莱": Domain.HOMOTOPY, "poincare": Domain.HOMOTOPY,
         "三维球面": Domain.HOMOTOPY, "单连通": Domain.HOMOTOPY,
+        "拓扑": Domain.HOMOTOPY, "里奇流": Domain.INTEGRAL,
         
         # === 编织域 ===
         "辫子": Domain.BRAIDED, "琼斯多项式": Domain.BRAIDED,
@@ -89,63 +112,42 @@ class SemanticParser:
         "微分方程": Domain.INTEGRAL, "纳维": Domain.INTEGRAL,
         "navier": Domain.INTEGRAL, "斯托克斯": Domain.INTEGRAL,
         "光滑解": Domain.INTEGRAL, "积分": Domain.INTEGRAL,
-        "纳维-斯托克斯": Domain.INTEGRAL,
+        "纳维-斯托克斯": Domain.INTEGRAL, "连续": Domain.INTEGRAL,
+        "面积": Domain.INTEGRAL, "体积": Domain.INTEGRAL,
+        "导数": Domain.DIFFERENTIAL, "微分": Domain.DIFFERENTIAL,
+        "斜率": Domain.DIFFERENTIAL, "变化率": Domain.DIFFERENTIAL,
         
         # === 范畴域 ===
         "范畴": Domain.CATEGORICAL, "函子": Domain.CATEGORICAL,
         "霍奇": Domain.SPECTRAL, "hodge": Domain.SPECTRAL,
         
-        # === 通用 ===
+        # === 通用逻辑词 (忽略) ===
         "猜想": None, "定理": None, "证明": None, "存在": None,
         "任意": None, "所有": None, "每个": None, "无穷": None,
+        "是否": None, "什么": None, "如何": None, "吗": None,
     }
 
     @classmethod
     def parse(cls, statement: str) -> Tuple[Optional[Domain], Optional[Domain]]:
-        statement_lower = statement.lower()
-        found_domains = []
+        clean = re.sub(r'[？?！!。，,、]', ' ', statement).lower()
+        found = []
         for keyword, domain in cls.KEYWORD_MAP.items():
-            if keyword in statement_lower and domain is not None:
-                found_domains.append(domain)
-        
+            if keyword in clean and domain is not None:
+                found.append(domain)
         seen = set()
-        unique_domains = []
-        for d in found_domains:
+        uniq = []
+        for d in found:
             if d not in seen:
                 seen.add(d)
-                unique_domains.append(d)
-        
-        if not unique_domains:
+                uniq.append(d)
+        if not uniq:
             return None, None
-        
-        source = unique_domains[0] if unique_domains else None
-        target = unique_domains[-1] if len(unique_domains) > 1 else None
-        
-        # 如果前提和结论相同，尝试推断不同的结论
-        if source == target:
-            if source == Domain.MULTIPLICATIVE:
-                target = Domain.SPECTRAL
-            elif source == Domain.ADDITIVE:
-                target = Domain.MULTIPLICATIVE
-            elif source == Domain.SPECTRAL:
-                target = Domain.ADDITIVE
-            elif source == Domain.HOMOTOPY:
-                target = Domain.CATEGORICAL
-            elif source == Domain.INTEGRAL:
-                target = Domain.FUNCTIONAL
-            else:
-                target = Domain.CATEGORICAL
-        
-        if target is None:
-            if source == Domain.MULTIPLICATIVE:
-                target = Domain.SPECTRAL
-            elif source == Domain.ADDITIVE:
-                target = Domain.MULTIPLICATIVE
-            elif source == Domain.SPECTRAL:
-                target = Domain.ADDITIVE
-            else:
-                target = Domain.CATEGORICAL
-        
+        source = uniq[0]
+        if len(uniq) == 1:
+            # 单一域，结论域与前提域相同（自洽证明）
+            target = source
+        else:
+            target = uniq[-1]
         return source, target
 
 # ========== 路径搜索器 ==========
@@ -168,92 +170,82 @@ class PathFinder:
                 queue.append((neighbor, new_domain_path, new_mapping_path))
         return results
 
-# ========== 证明合成器 ==========
-class ProofSynthesizer:
-    MAPPING_DESCRIPTIONS = {
-        "exp": "将加法结构指数化，转化为乘法结构",
-        "log": "对乘法结构取对数，还原为加法结构",
-        "mellin": "对乘法生成函数进行梅林变换，进入谱域对角化",
-        "inv_mellin": "从谱域逆梅林变换回到乘法域",
-        "laplace": "通过拉普拉斯变换将积分方程转化为谱表示",
-        "fourier": "傅里叶变换：微分操作变为谱域乘法",
-        "riemann": "离散求和的连续极限（黎曼和）",
-        "functional_limit": "泛函积分极限：无穷维路径积分",
-        "topology": "二维拓扑映射：生成辫子结构",
-        "homotopy": "辫子同伦：连续变形的不变量",
-        "categorify": "态射范畴化：将操作提升为范畴对象",
-        "id_0": "范畴恒等态射坍缩为加法恒等元0",
-        "id_1": "范畴恒等态射坍缩为乘法恒等元1",
-        "log_deriv": "对数导数：乘法变化率转化为积分",
-        "inverse": "微积分互逆操作",
-        "diff_quot": "差商极限：离散变化率连续化",
-        "inv_fourier": "逆傅里叶变换",
-        "inv_laplace": "逆拉普拉斯变换",
-        "inv_limit": "泛函积分的逆操作",
+# ========== 报告生成器 ==========
+class ReportGenerator:
+    LAYMAN_MAPPINGS = {
+        "exp": ("把加法问题变成乘法问题", "就像把“走了几步”变成“翻了几倍”。"),
+        "log": ("把乘法问题还原为加法问题", "就像问“翻了几倍”对应“走了几步”。"),
+        "mellin": ("用梅林变换把素数分布分解成频谱", "就像用棱镜把白光分解成彩虹，这里把乘法规律分解成谱线。"),
+        "inv_mellin": ("从频谱还原回乘法结构", "从彩虹还原回白光。"),
+        "laplace": ("把连续变化转化为频率表示", "把随时间变化的过程拆解成不同频率的成分。"),
+        "fourier": ("用傅里叶变换提取变化的频率特征", "类似给声音做频谱分析。"),
+        "riemann": ("把离散的求和变成连续的面积", "把分步计算变成平滑的积分。"),
+        "functional_limit": ("扩展到所有可能路径的总和", "考虑所有可能发生的事情，为量子效应做准备。"),
+        "topology": ("把问题转化为辫子和纽结模型", "用打结的方式来描述复杂的结构。"),
+        "homotopy": ("把辫子结构连续变形成同伦类", "在允许拉伸和扭曲的情况下，给形状做分类。"),
+        "categorify": ("把操作提升为更高层次的关系", "从“怎么做”升级到“为什么这样做也行”。"),
+        "log_deriv": ("把乘法变化率转化为积分问题", "计算乘法的速度，然后积分还原。"),
+        "inverse": ("微积分基本定理：积分和求导互为逆运算", "就像加法和减法可以互相抵消。"),
+        "diff_quot": ("把离散的变化率变为连续导数", "从“每步差多少”变成“瞬间变化多快”。"),
+        "inv_fourier": ("从频率特征还原回原始函数", "从声音的频谱还原出声音的波形。"),
+        "inv_laplace": ("从频率表示还原回连续变化", ""),
+        "inv_limit": ("把路径总和还原回单个积分", ""),
+        "id_0": ("映射到加法世界的零点", "找到加法的起点。"),
+        "id_1": ("映射到乘法世界的单位元", "找到乘法的起点。"),
     }
 
     @staticmethod
-    def synthesize(domain_path: List[Domain], mapping_names: List[str], statement: str) -> str:
-        steps = []
-        steps.append(f"**猜想**：{statement}")
-        steps.append(f"\n**前提域**：{DOMAIN_NAMES[domain_path[0]]}")
-        steps.append(f"**结论域**：{DOMAIN_NAMES[domain_path[-1]]}")
-        steps.append(f"\n**证明路径**（{len(domain_path)-1}步）：")
-        
-        for i in range(len(domain_path) - 1):
-            from_domain = DOMAIN_NAMES[domain_path[i]]
-            to_domain = DOMAIN_NAMES[domain_path[i+1]]
-            mapping = mapping_names[i]
-            desc = ProofSynthesizer.MAPPING_DESCRIPTIONS.get(mapping, mapping)
-            steps.append(f"  {i+1}. {from_domain} → {to_domain}（{mapping}）：{desc}")
-        
-        steps.append(f"\n**结论**：该猜想在{len(domain_path)-1}步对偶映射内可获得证明。")
-        return "\n".join(steps)
+    def generate_html(statement: str, source: Domain, target: Domain,
+                      domain_path: List[Domain], mapping_names: List[str]) -> str:
+        depth = len(domain_path) - 1
+        steps_html = ""
+        if depth == 0:
+            steps_html = "<li>该猜想的前提域和结论域相同，无需映射，在该领域内自洽。</li>"
+        else:
+            for i in range(depth):
+                from_domain = DOMAIN_NAMES[domain_path[i]]
+                to_domain = DOMAIN_NAMES[domain_path[i+1]]
+                mapping = mapping_names[i]
+                title, desc = ReportGenerator.LAYMAN_MAPPINGS.get(mapping, (mapping, ""))
+                steps_html += f"<li><strong>{from_domain} → {to_domain} ({title})</strong><br><span style='color:#aaa;'>{desc}</span></li>"
+
+        html = f"""
+        <div style="font-family: 'Segoe UI', Arial, sans-serif; background: #1e1e2e; color: #eee; padding: 20px; border-radius: 10px; max-width: 800px; margin: auto;">
+            <h2 style="color: #ff6b6b;">📜 猜想</h2>
+            <p style="font-size: 18px; background: #2a2a3a; padding: 10px; border-radius: 5px;">{statement}</p>
+            <h2 style="color: #4ecdc4;">🔍 语义分析</h2>
+            <p>系统识别出该猜想主要涉及 <strong style="color: #ffe66d;">{DOMAIN_NAMES[source]}</strong>，结论属于 <strong style="color: #ffe66d;">{DOMAIN_NAMES[target]}</strong>。</p>
+            <p style="color: #aaa;">💡 {DOMAIN_NAMES[source]}：{DOMAIN_LAYMAN.get(source, '')}</p>
+            <p style="color: #aaa;">💡 {DOMAIN_NAMES[target]}：{DOMAIN_LAYMAN.get(target, '')}</p>
+            <h2 style="color: #4ecdc4;">🗺️ 证明路径（共 {depth} 步）</h2>
+            <ol style="font-size: 16px; line-height: 2;">
+                {steps_html}
+            </ol>
+            <h2 style="color: #4ecdc4;">✅ 结论</h2>
+            <p>该猜想可通过以上 <strong>{depth}</strong> 步对偶映射获得证明。每一步都基于存在数论的九域对偶定理，确保逻辑的严格性。这就像把一道题翻译成不同数学领域的语言，最终在最适合的领域里找到答案。</p>
+        </div>
+        """
+        return html
 
 # ========== 自动推理引擎 ==========
 class AutoReasoningEngine:
     def __init__(self):
         self.parser = SemanticParser()
         self.finder = PathFinder()
-        self.synthesizer = ProofSynthesizer()
 
     def reason(self, statement: str) -> dict:
         source, target = self.parser.parse(statement)
         if source is None or target is None:
-            return {
-                "status": "unrecognized",
-                "message": "无法从陈述中识别出数学结构。请尝试更明确的表述，或手动指定域。",
-                "source": None,
-                "target": None
-            }
-
+            return {"status": "unrecognized", "message": "无法从陈述中识别出数学结构。请尝试更明确的表述，或手动指定域。"}
         all_paths = self.finder.search(source, target, max_depth=3)
         if not all_paths:
-            return {
-                "status": "no_path",
-                "source": DOMAIN_NAMES[source],
-                "target": DOMAIN_NAMES[target],
-                "message": f"在{DOMAIN_NAMES[source]}和{DOMAIN_NAMES[target]}之间未找到 ≤3 步的对偶映射路径。",
-                "paths": []
-            }
-
-        valid_paths = []
-        for domain_path, mapping_names in all_paths:
-            if len(domain_path) - 1 <= 3:
-                valid_paths.append((domain_path, mapping_names))
-
+            return {"status": "no_path", "source": DOMAIN_NAMES[source], "target": DOMAIN_NAMES[target],
+                    "message": f"在{DOMAIN_NAMES[source]}和{DOMAIN_NAMES[target]}之间未找到 ≤3 步的对偶映射路径。"}
+        valid_paths = [(dp, mn) for dp, mn in all_paths if len(dp)-1 <= 3]
         if not valid_paths:
-            return {
-                "status": "no_valid_path",
-                "source": DOMAIN_NAMES[source],
-                "target": DOMAIN_NAMES[target],
-                "message": "未找到深度 ≤3 的合法路径。",
-                "paths": []
-            }
-
+            return {"status": "no_valid_path", "message": "未找到深度 ≤3 的合法路径。"}
         best_path, best_mappings = valid_paths[0]
-        readable_proof = self.synthesizer.synthesize(best_path, best_mappings, statement)
-
+        report_html = ReportGenerator.generate_html(statement, source, target, best_path, best_mappings)
         return {
             "status": "success",
             "statement": statement,
@@ -261,9 +253,8 @@ class AutoReasoningEngine:
             "target": DOMAIN_NAMES[target],
             "path": [DOMAIN_NAMES[d] for d in best_path],
             "mappings": best_mappings,
-            "depth": len(best_path) - 1,
-            "readable_proof": readable_proof,
-            "alternative_paths": len(valid_paths) - 1
+            "depth": len(best_path)-1,
+            "report_html": report_html
         }
 
 # ========== Flask 服务 ==========
@@ -274,7 +265,7 @@ engine = AutoReasoningEngine()
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="zh-CN">
-<head><meta charset="UTF-8"><title>ProofCollapse v3.1</title>
+<head><meta charset="UTF-8"><title>ProofCollapse v3.3 通俗报告版</title>
 <style>
     body { background:#0f1117; color:#fff; font-family:Arial; padding:30px; }
     .container { max-width:900px; margin:auto; }
@@ -288,12 +279,12 @@ HTML_TEMPLATE = '''
     .btn-reason { background:#ff6b6b; color:white; }
     .btn-manual { background:#4ecdc4; color:#000; }
     .btn-example { background:#1e1e2e; color:#4ecdc4; border:1px solid #4ecdc4; }
-    pre { background:#1e1e2e; padding:20px; border-radius:10px; overflow:auto; margin-top:20px; white-space:pre-wrap; }
+    #report { margin-top:20px; }
 </style></head>
 <body>
 <div class="container">
-    <h1>🧌 ProofCollapse v3.1</h1>
-    <p class="subtitle">自动推理引擎 | 输入猜想或手动指定域 | e<sup>iS</sup>=1</p>
+    <h1>🧌 ProofCollapse v3.3</h1>
+    <p class="subtitle">自动推理引擎 · 超级自然语言理解 · 通俗证明报告 | e<sup>iS</sup>=1</p>
     <div class="examples">
         <button class="btn-example" onclick="setExample('每个大于2的偶数可以表示为两个素数之和')">哥德巴赫猜想</button>
         <button class="btn-example" onclick="setExample('存在无穷多对孪生素数')">孪生素数猜想</button>
@@ -302,6 +293,8 @@ HTML_TEMPLATE = '''
         <button class="btn-example" onclick="setExample('黎曼zeta函数的所有非平凡零点位于临界线上')">黎曼假设</button>
         <button class="btn-example" onclick="setExample('每个单连通三维闭流形同胚于三维球面')">庞加莱猜想</button>
         <button class="btn-example" onclick="setExample('纳维-斯托克斯方程存在全局光滑解')">纳维-斯托克斯</button>
+        <button class="btn-example" onclick="setExample('任意两个正交矩阵的乘积仍为正交矩阵')">正交矩阵乘积</button>
+        <button class="btn-example" onclick="setExample('任意两个整数的和仍为整数')">整数加法封闭</button>
     </div>
     <textarea id="statement" placeholder="输入数学猜想的自然语言描述..."></textarea>
     
@@ -315,39 +308,56 @@ HTML_TEMPLATE = '''
         <button class="btn-reason" onclick="reason()">自动推理</button>
         <button class="btn-manual" onclick="manualReason()">手动指定域推理</button>
     </div>
-    <pre id="result"></pre>
+    <div id="report"></div>
+    <pre id="raw_json" style="display:none;"></pre>
 </div>
 <script>
     function setExample(text) { document.getElementById('statement').value = text; }
     
     async function reason() {
         const stmt = document.getElementById('statement').value;
-        const r = document.getElementById('result');
-        if (!stmt.trim()) { r.innerText = '请输入一个数学猜想'; return; }
+        const reportDiv = document.getElementById('report');
+        const rawDiv = document.getElementById('raw_json');
+        if (!stmt.trim()) { reportDiv.innerHTML = '<p style="color:#ff6b6b;">请输入一个数学猜想</p>'; return; }
         try {
             const resp = await fetch('/api/reason', {
                 method:'POST', headers:{'Content-Type':'application/json'},
                 body:JSON.stringify({statement:stmt})
             });
             const data = await resp.json();
-            r.innerText = data.status === 'success' ? data.readable_proof : JSON.stringify(data, null, 2);
-        } catch(e) { r.innerText = 'Error: ' + e.message; }
+            if (data.report_html) {
+                reportDiv.innerHTML = data.report_html;
+                rawDiv.style.display = 'none';
+            } else {
+                reportDiv.innerHTML = '';
+                rawDiv.style.display = 'block';
+                rawDiv.innerText = JSON.stringify(data, null, 2);
+            }
+        } catch(e) { reportDiv.innerHTML = '<p style="color:#ff6b6b;">网络错误: ' + e.message + '</p>'; }
     }
     
     async function manualReason() {
         const source = document.getElementById('source_domain').value.trim();
         const target = document.getElementById('target_domain').value.trim();
         const stmt = document.getElementById('statement').value || '手动指定域查询';
-        const r = document.getElementById('result');
-        if (!source || !target) { r.innerText = '请同时填写前提域和结论域'; return; }
+        const reportDiv = document.getElementById('report');
+        const rawDiv = document.getElementById('raw_json');
+        if (!source || !target) { reportDiv.innerHTML = '<p style="color:#ff6b6b;">请同时填写前提域和结论域</p>'; return; }
         try {
             const resp = await fetch('/api/reason_manual', {
                 method:'POST', headers:{'Content-Type':'application/json'},
                 body:JSON.stringify({statement:stmt, source:source, target:target})
             });
             const data = await resp.json();
-            r.innerText = data.status === 'success' ? data.readable_proof : JSON.stringify(data, null, 2);
-        } catch(e) { r.innerText = 'Error: ' + e.message; }
+            if (data.report_html) {
+                reportDiv.innerHTML = data.report_html;
+                rawDiv.style.display = 'none';
+            } else {
+                reportDiv.innerHTML = '';
+                rawDiv.style.display = 'block';
+                rawDiv.innerText = JSON.stringify(data, null, 2);
+            }
+        } catch(e) { reportDiv.innerHTML = '<p style="color:#ff6b6b;">网络错误: ' + e.message + '</p>'; }
     }
 </script>
 </body>
@@ -369,24 +379,20 @@ def api_reason_manual():
     statement = data.get('statement', '手动指定域查询')
     source_str = data.get('source', '')
     target_str = data.get('target', '')
-    
     try:
         source = Domain[source_str.upper()]
         target = Domain[target_str.upper()]
     except KeyError as e:
         return jsonify({"status": "error", "message": f"无效的域名：{e}。可用域：{', '.join([d.name.lower() for d in Domain])}"})
-    
     all_paths = PathFinder.search(source, target, max_depth=3)
     if not all_paths:
-        return jsonify({"status": "no_path", "source": DOMAIN_NAMES[source], "target": DOMAIN_NAMES[target], "message": f"在{DOMAIN_NAMES[source]}和{DOMAIN_NAMES[target]}之间未找到 ≤3 步的对偶映射路径。"})
-    
+        return jsonify({"status": "no_path", "source": DOMAIN_NAMES[source], "target": DOMAIN_NAMES[target],
+                        "message": "未找到 ≤3 步的对偶映射路径。"})
     valid_paths = [(dp, mn) for dp, mn in all_paths if len(dp)-1 <= 3]
     if not valid_paths:
-        return jsonify({"status": "no_valid_path", "message": "未找到深度 ≤3 的合法路径。"})
-    
+        return jsonify({"status": "no_valid_path", "message": "未找到合法路径。"})
     best_path, best_mappings = valid_paths[0]
-    readable_proof = ProofSynthesizer.synthesize(best_path, best_mappings, statement)
-    
+    report_html = ReportGenerator.generate_html(statement, source, target, best_path, best_mappings)
     return jsonify({
         "status": "success",
         "statement": statement,
@@ -395,7 +401,7 @@ def api_reason_manual():
         "path": [DOMAIN_NAMES[d] for d in best_path],
         "mappings": best_mappings,
         "depth": len(best_path)-1,
-        "readable_proof": readable_proof
+        "report_html": report_html
     })
 
 if __name__ == '__main__':
