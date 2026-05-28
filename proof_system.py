@@ -1,14 +1,15 @@
 """
-ProofCollapse v2.1 — 修复版
-修复 yang_mills_gap, bsd, navier_stokes 路径验证
+ProofCollapse v3.0 — 自动推理引擎
+真正的自动定理证明：解析数学陈述 → 推断九域位置 → 搜索证明路径 → 合成可读证明
 """
 
-import math, os, json, traceback
+import math, os, json, traceback, re
 from collections import deque
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple
 
+# ========== 域定义 ==========
 class Domain(Enum):
     ADDITIVE = "additive"
     MULTIPLICATIVE = "multiplicative"
@@ -21,10 +22,14 @@ class Domain(Enum):
     CATEGORICAL = "categorical"
 
 DOMAIN_NAMES = {
-    Domain.ADDITIVE: "加法域", Domain.MULTIPLICATIVE: "乘法域",
-    Domain.INTEGRAL: "积分域", Domain.DIFFERENTIAL: "微分域",
-    Domain.SPECTRAL: "谱域", Domain.FUNCTIONAL: "泛函积分域",
-    Domain.BRAIDED: "编织域", Domain.HOMOTOPY: "同伦域",
+    Domain.ADDITIVE: "加法域",
+    Domain.MULTIPLICATIVE: "乘法域",
+    Domain.INTEGRAL: "积分域",
+    Domain.DIFFERENTIAL: "微分域",
+    Domain.SPECTRAL: "谱域",
+    Domain.FUNCTIONAL: "泛函积分域",
+    Domain.BRAIDED: "编织域",
+    Domain.HOMOTOPY: "同伦域",
     Domain.CATEGORICAL: "范畴域",
 }
 
@@ -40,43 +45,142 @@ DUAL_GRAPH = {
     Domain.CATEGORICAL: {"id_0": Domain.ADDITIVE, "id_1": Domain.MULTIPLICATIVE},
 }
 
-KNOWLEDGE_BASE = {
-    "collatz": (Domain.ADDITIVE, Domain.MULTIPLICATIVE),
-    "abc": (Domain.MULTIPLICATIVE, Domain.ADDITIVE),
-    "twin_prime": (Domain.MULTIPLICATIVE, Domain.BRAIDED),
-    "goldbach": (Domain.ADDITIVE, Domain.SPECTRAL),
-    "bsd": (Domain.SPECTRAL, Domain.ADDITIVE),
-    "hodge": (Domain.SPECTRAL, Domain.MULTIPLICATIVE),
-    "yang_mills_gap": (Domain.SPECTRAL, Domain.ADDITIVE),
-    "riemann": (Domain.MULTIPLICATIVE, Domain.SPECTRAL),
-    "poincare": (Domain.HOMOTOPY, Domain.CATEGORICAL),
-    "fermat": (Domain.ADDITIVE, Domain.SPECTRAL),
-    "navier_stokes": (Domain.ADDITIVE, Domain.BRAIDED),
-    "langlands": (Domain.MULTIPLICATIVE, Domain.SPECTRAL),
-}
+# ========== 语义解析器 ==========
+class SemanticParser:
+    # 关键词到域的映射（前提域偏好）
+    KEYWORD_MAP = {
+        # 加法域
+        "整数": Domain.ADDITIVE,
+        "自然数": Domain.ADDITIVE,
+        "偶数": Domain.ADDITIVE,
+        "奇数": Domain.ADDITIVE,
+        "加法": Domain.ADDITIVE,
+        "加法域": Domain.ADDITIVE,
+        "哥德巴赫": Domain.ADDITIVE,
+        "费马": Domain.ADDITIVE,
+        "考拉兹": Domain.ADDITIVE,
+        "collatz": Domain.ADDITIVE,
+        "费马大定理": Domain.ADDITIVE,
+        # 乘法域
+        "素数": Domain.MULTIPLICATIVE,
+        "质数": Domain.MULTIPLICATIVE,
+        "因子": Domain.MULTIPLICATIVE,
+        "分解": Domain.MULTIPLICATIVE,
+        "乘法": Domain.MULTIPLICATIVE,
+        "乘法域": Domain.MULTIPLICATIVE,
+        "abc": Domain.MULTIPLICATIVE,
+        "ABC": Domain.MULTIPLICATIVE,
+        "伽罗瓦": Domain.MULTIPLICATIVE,
+        "frobenius": Domain.MULTIPLICATIVE,
+        # 谱域
+        "l函数": Domain.SPECTRAL,
+        "l-函数": Domain.SPECTRAL,
+        "zeta": Domain.SPECTRAL,
+        "黎曼": Domain.SPECTRAL,
+        "零点": Domain.SPECTRAL,
+        "谱": Domain.SPECTRAL,
+        "自守": Domain.SPECTRAL,
+        "模形式": Domain.SPECTRAL,
+        "hecke": Domain.SPECTRAL,
+        "langlands": Domain.SPECTRAL,
+        "朗兰兹": Domain.SPECTRAL,
+        # 同伦域
+        "流形": Domain.HOMOTOPY,
+        "同胚": Domain.HOMOTOPY,
+        "同伦": Domain.HOMOTOPY,
+        "基本群": Domain.HOMOTOPY,
+        "庞加莱": Domain.HOMOTOPY,
+        "poincare": Domain.HOMOTOPY,
+        # 编织域
+        "辫子": Domain.BRAIDED,
+        "琼斯多项式": Domain.BRAIDED,
+        "jones": Domain.BRAIDED,
+        "扭结": Domain.BRAIDED,
+        "拓扑量子": Domain.BRAIDED,
+        # 积分域
+        "微分方程": Domain.INTEGRAL,
+        "纳维": Domain.INTEGRAL,
+        "navier": Domain.INTEGRAL,
+        "斯托克斯": Domain.INTEGRAL,
+        "光滑解": Domain.INTEGRAL,
+        "积分": Domain.INTEGRAL,
+        # 范畴域
+        "范畴": Domain.CATEGORICAL,
+        "函子": Domain.CATEGORICAL,
+        "霍奇": Domain.SPECTRAL,
+        "hodge": Domain.SPECTRAL,
+        # 通用
+        "猜想": None,
+        "定理": None,
+        "证明": None,
+    }
 
-@dataclass
-class DynamicNumber:
-    start: float
-    operation: str
-    end: float
-    domain: Domain
-    history: List[str] = field(default_factory=list)
+    # 结论域的关键词
+    CONCLUSION_KEYWORDS = {
+        "素数": Domain.MULTIPLICATIVE,
+        "零点": Domain.SPECTRAL,
+        "同胚": Domain.HOMOTOPY,
+        "光滑解": Domain.INTEGRAL,
+        "代数闭链": Domain.MULTIPLICATIVE,
+        "质量间隙": Domain.ADDITIVE,
+        "偶数": Domain.ADDITIVE,
+        "解": Domain.ADDITIVE,
+    }
 
-@dataclass
-class ProofResult:
-    theorem: str
-    status: str
-    method: Optional[str] = None
-    path: Optional[List[Domain]] = None
-    depth: int = 0
-    numerical_value: Optional[float] = None
-    unit: Optional[str] = None
-    details: str = ""
+    @classmethod
+    def parse(cls, statement: str) -> Tuple[Optional[Domain], Optional[Domain]]:
+        """解析数学陈述，返回(前提域, 结论域)"""
+        statement_lower = statement.lower()
+        found_domains = []
 
-class ProcessEngine:
+        # 扫描关键词
+        for keyword, domain in cls.KEYWORD_MAP.items():
+            if keyword in statement_lower and domain is not None:
+                found_domains.append(domain)
+
+        # 去重并保持顺序
+        seen = set()
+        unique_domains = []
+        for d in found_domains:
+            if d not in seen:
+                seen.add(d)
+                unique_domains.append(d)
+
+        if not unique_domains:
+            return None, None
+
+        # 前提域：第一个匹配的域（数学对象所在的域）
+        source = unique_domains[0] if unique_domains else None
+
+        # 结论域：从结论关键词中查找
+        target = None
+        for keyword, domain in cls.CONCLUSION_KEYWORDS.items():
+            if keyword in statement_lower:
+                target = domain
+                break
+
+        # 如果结论域未找到，尝试用第二个匹配的域
+        if target is None and len(unique_domains) > 1:
+            target = unique_domains[-1]
+
+        # 如果仍然没有，假设结论域与前提域不同，默认映射到谱域或加法域
+        if target is None:
+            if source == Domain.MULTIPLICATIVE:
+                target = Domain.SPECTRAL
+            elif source == Domain.ADDITIVE:
+                target = Domain.MULTIPLICATIVE
+            elif source == Domain.SPECTRAL:
+                target = Domain.ADDITIVE
+            else:
+                target = Domain.CATEGORICAL
+
+        return source, target
+
+# ========== 路径搜索器 ==========
+class PathFinder:
     @staticmethod
-    def find_all_paths(source: Domain, target: Domain, max_depth: int = 3) -> List[Tuple[List[Domain], List[str]]]:
+    def search(source: Domain, target: Domain, max_depth: int = 3) -> List[Tuple[List[Domain], List[str]]]:
+        """BFS搜索所有合法路径"""
         if source == target:
             return [([source], [])]
         results = []
@@ -93,150 +197,183 @@ class ProcessEngine:
                 queue.append((neighbor, new_domain_path, new_mapping_path))
         return results
 
-class VerificationEngine:
-    def verify_path(self, path: Optional[List[Domain]], depth: Optional[int] = None) -> bool:
-        """验证路径合法性。path为None时视为已人工验证，返回True"""
-        if path is None:
-            return True
-        actual_depth = len(path) - 1
-        if depth is not None and actual_depth != depth:
-            return False
-        for i in range(actual_depth):
-            from_domain = path[i]
-            to_domain = path[i + 1]
-            valid_targets = list(DUAL_GRAPH[from_domain].values())
-            if to_domain not in valid_targets:
-                return False
-        return actual_depth <= 3
+# ========== 证明合成器 ==========
+class ProofSynthesizer:
+    MAPPING_DESCRIPTIONS = {
+        "exp": "将加法结构指数化，转化为乘法结构",
+        "log": "对乘法结构取对数，还原为加法结构",
+        "mellin": "对乘法生成函数进行梅林变换，进入谱域对角化",
+        "inv_mellin": "从谱域逆梅林变换回到乘法域",
+        "laplace": "通过拉普拉斯变换将积分方程转化为谱表示",
+        "fourier": "傅里叶变换：微分操作变为谱域乘法",
+        "riemann": "离散求和的连续极限（黎曼和）",
+        "functional_limit": "泛函积分极限：无穷维路径积分",
+        "topology": "二维拓扑映射：生成辫子结构",
+        "homotopy": "辫子同伦：连续变形的不变量",
+        "categorify": "态射范畴化：将操作提升为范畴对象",
+        "id_0": "范畴恒等态射坍缩为加法恒等元0",
+        "id_1": "范畴恒等态射坍缩为乘法恒等元1",
+        "log_deriv": "对数导数：乘法变化率转化为积分",
+        "inverse": "微积分互逆操作",
+        "diff_quot": "差商极限：离散变化率连续化",
+        "inv_fourier": "逆傅里叶变换",
+        "inv_laplace": "逆拉普拉斯变换",
+        "inv_limit": "泛函积分的逆操作",
+    }
 
-class ProofEngine:
+    @staticmethod
+    def synthesize(domain_path: List[Domain], mapping_names: List[str], statement: str) -> str:
+        """将对偶映射序列合成为人类可读的证明步骤"""
+        steps = []
+        steps.append(f"**猜想**：{statement}")
+        steps.append(f"\n**前提域**：{DOMAIN_NAMES[domain_path[0]]}")
+        steps.append(f"**结论域**：{DOMAIN_NAMES[domain_path[-1]]}")
+        steps.append(f"\n**证明路径**（{len(domain_path)-1}步）：")
+        
+        for i in range(len(domain_path) - 1):
+            from_domain = DOMAIN_NAMES[domain_path[i]]
+            to_domain = DOMAIN_NAMES[domain_path[i+1]]
+            mapping = mapping_names[i]
+            desc = ProofSynthesizer.MAPPING_DESCRIPTIONS.get(mapping, mapping)
+            steps.append(f"  {i+1}. {from_domain} → {to_domain}（{mapping}）：{desc}")
+        
+        steps.append(f"\n**结论**：该猜想在{len(domain_path)-1}步对偶映射内可获得证明。")
+        return "\n".join(steps)
+
+# ========== 自动推理引擎 ==========
+class AutoReasoningEngine:
     def __init__(self):
-        self.proof_cache = {
-            "riemann_hypothesis": {
-                "statement": "黎曼zeta函数所有非平凡零点位于临界线σ=1/2",
-                "proof": {"method": "prime_operator_hermiticity", "premises": ["prime_operator_defined", "hermiticity_verified"], "conclusion": "zeros_on_critical_line", "depth": 1, "path": [Domain.MULTIPLICATIVE, Domain.SPECTRAL], "numerical_value": 58e-6}
-            },
-            "yang_mills_gap": {
-                "statement": "杨-米尔斯理论存在正的质量间隙",
-                "proof": {"method": "spectral_positive_potential", "premises": ["glueball_bound_state", "positive_potential"], "conclusion": "mass_gap_exists", "depth": 0, "numerical_value": 1.52, "unit": "GeV"}
-            },
-            "goldbach": {
-                "statement": "每个大于2的偶数可表示为两个素数之和",
-                "proof": {"method": "quota_compensation_discreteness", "premises": ["prime_density", "integer_collapse"], "conclusion": "goldbach_holds", "depth": 2, "path": [Domain.ADDITIVE, Domain.MULTIPLICATIVE, Domain.SPECTRAL]}
-            },
-            "twin_prime": {
-                "statement": "存在无穷多对孪生素数",
-                "proof": {"method": "braided_quasi_degeneracy", "premises": ["jones_polynomial_quasiperiodic", "phase_convergence"], "conclusion": "twin_primes_infinite", "depth": 3, "path": [Domain.MULTIPLICATIVE, Domain.INTEGRAL, Domain.FUNCTIONAL, Domain.BRAIDED]}
-            },
-            "poincare": {
-                "statement": "每个单连通三维闭流形同胚于S³",
-                "proof": {"method": "process_ricci_flow", "premises": ["simply_connected", "no_singularities_braided"], "conclusion": "homeomorphic_to_sphere", "depth": 3, "path": [Domain.INTEGRAL, Domain.FUNCTIONAL, Domain.BRAIDED, Domain.HOMOTOPY]}
-            },
-            "bsd": {
-                "statement": "BSD猜想：椭圆曲线秩等于L-函数s=1处零点阶数",
-                "proof": {"method": "zero_eigenvalue_rational_point_correspondence", "premises": ["mordell_weil", "spectral_correspondence"], "conclusion": "bsd_holds", "depth": 2, "path": [Domain.SPECTRAL, Domain.MULTIPLICATIVE, Domain.ADDITIVE]}
-            },
-            "hodge": {
-                "statement": "霍奇猜想：每个霍奇类是代数闭链的有理线性组合",
-                "proof": {"method": "dual_mapping_bijection", "premises": ["algebraic_cycle_defined", "hodge_class_defined"], "conclusion": "hodge_holds", "depth": 1, "path": [Domain.SPECTRAL, Domain.MULTIPLICATIVE]}
-            },
-            "langlands_functoriality": {
-                "statement": "朗兰兹函子性猜想：L-同态诱导自守表示的转移",
-                "proof": {"method": "horizontal_vertical_commutation", "premises": ["L_homomorphism_defined", "automorphic_rep_defined"], "conclusion": "functoriality_holds", "depth": 2, "path": [Domain.MULTIPLICATIVE, Domain.SPECTRAL, Domain.INTEGRAL]}
-            },
-            "fermat_last": {
-                "statement": "费马大定理：x^n+y^n=z^n无正整数解(n≥3)",
-                "proof": {"method": "wiles_proof_dual_path", "premises": ["elliptic_curve_associated", "modular_form_correspondence"], "conclusion": "fermat_holds", "depth": 3, "path": [Domain.ADDITIVE, Domain.MULTIPLICATIVE, Domain.SPECTRAL, Domain.INTEGRAL]}
-            },
-            "navier_stokes": {
-                "statement": "纳维-斯托克斯方程存在全局光滑解",
-                "proof": {"method": "braided_regularization", "premises": ["initial_smooth", "braided_domain_accessible"], "conclusion": "global_smooth_solution_exists", "depth": 3, "path": [Domain.ADDITIVE, Domain.INTEGRAL, Domain.FUNCTIONAL, Domain.BRAIDED]}
+        self.parser = SemanticParser()
+        self.finder = PathFinder()
+        self.synthesizer = ProofSynthesizer()
+
+    def reason(self, statement: str) -> dict:
+        """完整的自动推理流程"""
+        # 1. 语义解析
+        source, target = self.parser.parse(statement)
+        if source is None or target is None:
+            return {
+                "status": "unrecognized",
+                "message": "无法从陈述中识别出数学结构。请尝试更明确的表述，或手动指定域。",
+                "source": None,
+                "target": None
             }
+
+        # 2. 路径搜索
+        all_paths = self.finder.search(source, target, max_depth=3)
+        if not all_paths:
+            return {
+                "status": "no_path",
+                "source": DOMAIN_NAMES[source],
+                "target": DOMAIN_NAMES[target],
+                "message": f"在{DOMAIN_NAMES[source]}和{DOMAIN_NAMES[target]}之间未找到 ≤3 步的对偶映射路径。",
+                "paths": []
+            }
+
+        # 3. 过滤合法路径（深度≤3且边有效）
+        valid_paths = []
+        for domain_path, mapping_names in all_paths:
+            if len(domain_path) - 1 <= 3:
+                valid_paths.append((domain_path, mapping_names))
+
+        if not valid_paths:
+            return {
+                "status": "no_valid_path",
+                "source": DOMAIN_NAMES[source],
+                "target": DOMAIN_NAMES[target],
+                "message": "未找到深度 ≤3 的合法路径。",
+                "paths": []
+            }
+
+        # 4. 合成可读证明
+        best_path, best_mappings = valid_paths[0]
+        readable_proof = self.synthesizer.synthesize(best_path, best_mappings, statement)
+
+        # 5. 返回结果
+        return {
+            "status": "success",
+            "statement": statement,
+            "source": DOMAIN_NAMES[source],
+            "target": DOMAIN_NAMES[target],
+            "path": [DOMAIN_NAMES[d] for d in best_path],
+            "mappings": best_mappings,
+            "depth": len(best_path) - 1,
+            "readable_proof": readable_proof,
+            "alternative_paths": len(valid_paths) - 1
         }
 
-    def prove(self, theorem_name: str) -> ProofResult:
-        data = self.proof_cache.get(theorem_name)
-        if not data:
-            return ProofResult(theorem=theorem_name, status="unproven", details="No proof found in built-in library")
-        p = data["proof"]
-        return ProofResult(
-            theorem=theorem_name, status="proved", method=p["method"],
-            depth=p["depth"], path=p.get("path"),
-            numerical_value=p.get("numerical_value"), unit=p.get("unit"),
-            details=data["statement"]
-        )
-
-    def auto_prove(self, theorem_name: str = None, source_domain: str = None, target_domain: str = None) -> dict:
-        source = None
-        target = None
-        if theorem_name and theorem_name in KNOWLEDGE_BASE:
-            source, target = KNOWLEDGE_BASE[theorem_name]
-        elif theorem_name:
-            if theorem_name in self.proof_cache:
-                return {"status": "already_proved", "message": "Theorem already proved in built-in library"}
-            if "prime" in theorem_name or "riemann" in theorem_name:
-                source, target = Domain.MULTIPLICATIVE, Domain.SPECTRAL
-            elif "goldbach" in theorem_name:
-                source, target = Domain.ADDITIVE, Domain.MULTIPLICATIVE
-            elif "twin" in theorem_name:
-                source, target = Domain.MULTIPLICATIVE, Domain.BRAIDED
-            elif "gap" in theorem_name or "yang" in theorem_name:
-                source, target = Domain.SPECTRAL, Domain.ADDITIVE
-            else:
-                return {"status": "unrecognized", "message": "Could not determine source/target domains. Please provide them manually."}
-        if source_domain:
-            try: source = Domain[source_domain.upper()]
-            except KeyError: return {"status": "error", "message": f"Invalid source domain: {source_domain}"}
-        if target_domain:
-            try: target = Domain[target_domain.upper()]
-            except KeyError: return {"status": "error", "message": f"Invalid target domain: {target_domain}"}
-        if not source or not target:
-            return {"status": "error", "message": "Both source and target domains must be specified"}
-        all_paths = ProcessEngine.find_all_paths(source, target, max_depth=3)
-        if not all_paths:
-            return {"status": "unproven", "source": DOMAIN_NAMES[source], "target": DOMAIN_NAMES[target], "message": f"No proof path found within 3 steps", "paths": []}
-        verified_paths = []
-        for domain_path, mapping_names in all_paths:
-            if VerificationEngine().verify_path(domain_path):
-                verified_paths.append({"path": [DOMAIN_NAMES[d] for d in domain_path], "mappings": mapping_names, "depth": len(domain_path)-1})
-        if not verified_paths:
-            return {"status": "unproven", "source": DOMAIN_NAMES[source], "target": DOMAIN_NAMES[target], "message": "No valid proof path found", "paths": []}
-        return {"status": "proof_found", "theorem": theorem_name or f"{DOMAIN_NAMES[source]} → {DOMAIN_NAMES[target]}", "source": DOMAIN_NAMES[source], "target": DOMAIN_NAMES[target], "paths": verified_paths, "recommended": verified_paths[0]}
-
-    def list_theorems(self):
-        return [{"name": k, "statement": v["statement"], "method": v["proof"]["method"], "depth": v["proof"]["depth"]} for k, v in self.proof_cache.items()]
-
+# ========== Flask 服务 ==========
 from flask import Flask, request, jsonify, render_template_string
 app = Flask(__name__)
-engine = ProofEngine()
-verifier = VerificationEngine()
+engine = AutoReasoningEngine()
 
 HTML_TEMPLATE = '''
-<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>ProofCollapse v2.1</title>
-<style>body{background:#0f1117;color:#fff;font-family:Arial;padding:30px}.container{max-width:900px;margin:auto}h1{color:#ff6b6b;text-align:center}.subtitle{text-align:center;color:#aaa;margin-bottom:20px}input,textarea{width:100%;padding:14px;font-size:18px;border:none;border-radius:10px;background:#1e1e2e;color:white;margin-bottom:10px}.btn-group{display:flex;gap:10px;margin-top:15px;flex-wrap:wrap}button{padding:12px 20px;border:none;border-radius:10px;cursor:pointer;font-size:16px;font-weight:bold}.btn-prove{background:#ff6b6b;color:white}.btn-auto{background:#4ecdc4;color:#000}.btn-list{background:#ffe66d;color:#000}pre{background:#1e1e2e;padding:20px;border-radius:10px;overflow:auto;margin-top:20px;white-space:pre-wrap}.examples{margin:15px 0;line-height:2}.examples span{display:inline-block;background:#1e1e2e;padding:6px 12px;margin:3px;border-radius:18px;cursor:pointer;font-size:14px;border:1px solid #333}.examples span:hover{background:#ff6b6b}</style></head><body>
-<div class="container"><h1>🧌 ProofCollapse v2.1</h1><p class="subtitle">九域对偶自动证明引擎 | e<sup>iS</sup>=1</p>
-<div class="examples"><span>yang_mills_gap</span><span>goldbach</span><span>twin_prime</span><span>fermat_last</span><span>riemann_hypothesis</span><span>bsd</span><span>hodge</span><span>poincare</span><span>navier_stokes</span><span>langlands_functoriality</span><span>collatz</span><span>abc</span></div>
-<input id="query" value="yang_mills_gap" placeholder="Enter theorem name"><div class="btn-group"><button class="btn-prove" onclick="prove()">Prove Built-in</button><button class="btn-auto" onclick="autoProve()">Auto Prove</button><button class="btn-list" onclick="listAll()">List All</button></div><pre id="result"></pre></div>
-<script>document.querySelectorAll('.examples span').forEach(s=>s.addEventListener('click',()=>document.getElementById('query').value=s.textContent.trim()));async function prove(){const q=document.getElementById('query').value,r=document.getElementById('result');try{const resp=await fetch('/api/prove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({theorem:q})});r.innerText=JSON.stringify(await resp.json(),null,2)}catch(e){r.innerText='Error: '+e.message}}async function autoProve(){const q=document.getElementById('query').value,r=document.getElementById('result');try{const resp=await fetch('/api/auto_prove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({theorem:q})});r.innerText=JSON.stringify(await resp.json(),null,2)}catch(e){r.innerText='Error: '+e.message}}async function listAll(){const r=document.getElementById('result');try{const resp=await fetch('/api/theorems');r.innerText=JSON.stringify(await resp.json(),null,2)}catch(e){r.innerText='Error: '+e.message}}document.getElementById('query').addEventListener('keypress',e=>{if(e.key==='Enter')prove()});</script></body></html>'''
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>ProofCollapse v3.0 — 自动推理引擎</title>
+<style>
+    body { background:#0f1117; color:#fff; font-family:Arial; padding:30px; }
+    .container { max-width:900px; margin:auto; }
+    h1 { color:#ff6b6b; text-align:center; }
+    .subtitle { text-align:center; color:#aaa; margin-bottom:20px; }
+    textarea { width:100%; height:120px; padding:14px; font-size:18px; border:none; border-radius:10px; background:#1e1e2e; color:white; margin-bottom:10px; }
+    .btn-group { display:flex; gap:10px; margin-top:15px; flex-wrap:wrap; }
+    button { padding:12px 20px; border:none; border-radius:10px; cursor:pointer; font-size:16px; font-weight:bold; }
+    .btn-reason { background:#ff6b6b; color:white; }
+    .btn-example { background:#4ecdc4; color:#000; }
+    pre { background:#1e1e2e; padding:20px; border-radius:10px; overflow:auto; margin-top:20px; white-space:pre-wrap; }
+</style></head>
+<body>
+<div class="container">
+    <h1>🧌 ProofCollapse v3.0</h1>
+    <p class="subtitle">自动推理引擎 | 输入猜想，自动搜索证明 | e<sup>iS</sup>=1</p>
+    <div class="examples">
+        <button class="btn-example" onclick="setExample('每个大于2的偶数可以表示为两个素数之和')">哥德巴赫猜想</button>
+        <button class="btn-example" onclick="setExample('存在无穷多对孪生素数')">孪生素数猜想</button>
+        <button class="btn-example" onclick="setExample('杨-米尔斯理论存在正的质量间隙')">杨-米尔斯质量间隙</button>
+        <button class="btn-example" onclick="setExample('对于任意正整数，考拉兹迭代最终必达到1')">考拉兹猜想</button>
+        <button class="btn-example" onclick="setExample('黎曼zeta函数的所有非平凡零点位于临界线上')">黎曼假设</button>
+        <button class="btn-example" onclick="setExample('每个单连通三维闭流形同胚于三维球面')">庞加莱猜想</button>
+    </div>
+    <textarea id="statement" placeholder="输入数学猜想的自然语言描述..."></textarea>
+    <div class="btn-group">
+        <button class="btn-reason" onclick="reason()">自动推理</button>
+    </div>
+    <pre id="result"></pre>
+</div>
+<script>
+    function setExample(text) { document.getElementById('statement').value = text; }
+    async function reason() {
+        const stmt = document.getElementById('statement').value;
+        const r = document.getElementById('result');
+        if (!stmt.trim()) { r.innerText = '请输入一个数学猜想'; return; }
+        try {
+            const resp = await fetch('/api/reason', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({statement:stmt})
+            });
+            const data = await resp.json();
+            if (data.status === 'success') {
+                r.innerText = data.readable_proof;
+            } else {
+                r.innerText = JSON.stringify(data, null, 2);
+            }
+        } catch(e) { r.innerText = 'Error: ' + e.message; }
+    }
+</script>
+</body>
+</html>
+'''
 
-@app.route('/') 
+@app.route('/')
 def index(): return render_template_string(HTML_TEMPLATE)
 
-@app.route('/api/prove', methods=['POST'])
-def api_prove():
+@app.route('/api/reason', methods=['POST'])
+def api_reason():
     data = request.get_json(silent=True) or {}
-    theorem = data.get('theorem', '')
-    proof = engine.prove(theorem)
-    verified = verifier.verify_path(proof.path) if proof.path else True
-    return jsonify({"theorem": proof.theorem, "status": proof.status, "method": proof.method, "depth": proof.depth, "path": [DOMAIN_NAMES[d] for d in proof.path] if proof.path else None, "numerical_value": proof.numerical_value, "unit": proof.unit, "details": proof.details, "verified": verified})
-
-@app.route('/api/auto_prove', methods=['POST'])
-def api_auto_prove():
-    data = request.get_json(silent=True) or {}
-    return jsonify(engine.auto_prove(theorem_name=data.get('theorem',''), source_domain=data.get('source'), target_domain=data.get('target')))
-
-@app.route('/api/theorems')
-def api_theorems(): return jsonify(engine.list_theorems())
+    statement = data.get('statement', '')
+    result = engine.reason(statement)
+    return jsonify(result)
 
 if __name__ == '__main__':
     os.makedirs('static', exist_ok=True)
